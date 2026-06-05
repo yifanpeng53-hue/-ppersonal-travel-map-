@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { MapContainer, Marker, TileLayer, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
+import LoginForm from './components/LoginForm';
+import ProfilePanel from './components/ProfilePanel';
+import { supabase } from './lib/supabaseClient';
 
 const STORAGE_KEY = 'yifan-y2k-travel-stars';
 const TRACKS = ['ALL', '2024', '2025', '2026'];
@@ -21,7 +24,7 @@ const INITIAL_STARS = [
       'https://images.unsplash.com/photo-1540959733332-eab4deabeeaf?auto=format&fit=crop&w=600&q=80',
   },
   {
-    id: 'fukuoka-2024-11-20',
+    id: 'fukuoka-2024-11-20', 
     city: 'Fukuoka',
     date: '2024.11.20',
     year: '2024',
@@ -195,7 +198,8 @@ function App() {
   const [volume, setVolume] = useState(0.55);
   const [lcdFlash, setLcdFlash] = useState('');
   const [openCards, setOpenCards] = useState([]);
-  const [formOpen, setFormOpen] = useState(true);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [leftPanel, setLeftPanel] = useState(null);
   const [y2kAlert, setY2kAlert] = useState('');
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
   const [form, setForm] = useState({
@@ -209,16 +213,155 @@ function App() {
   });
   const audioRef = useRef(null);
   const imageInputRef = useRef(null);
+  const menuRef = useRef(null);
+  const [session, setSession] = useState(null);
+  const [user, setUser] = useState(null);
+
+  const fetchFootprints = async (token) => {
+    if (!token) return;
+    try {
+      const response = await fetch('/api/footprints', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        setY2kAlert(error?.error || '无法加载个人足迹，请重试。');
+        return;
+      }
+      const data = await response.json();
+      setStars(Array.isArray(data) ? data : []);
+    } catch {
+      setY2kAlert('网络错误，无法加载足迹。');
+    }
+  };
+
+  const createFootprint = async (item) => {
+    if (!session?.access_token) {
+      setY2kAlert('Please login first.');
+      return null;
+    }
+
+    try {
+      const response = await fetch('/api/footprints', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify(item),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        setY2kAlert(result?.error || '创建足迹失败');
+        return null;
+      }
+      return result;
+    } catch {
+      setY2kAlert('网络错误，创建足迹失败');
+      return null;
+    }
+  };
+
+  const deleteFootprint = async (id) => {
+    if (!session?.access_token) {
+      setY2kAlert('请先登录后再删除足迹');
+      return false;
+    }
+
+    try {
+      const response = await fetch(`/api/footprints/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        setY2kAlert(result?.error || '删除足迹失败');
+        return false;
+      }
+      return true;
+    } catch {
+      setY2kAlert('网络错误，删除足迹失败');
+      return false;
+    }
+  };
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setSession(null);
+    setUser(null);
+    setStars(loadInitialStars());
+    setLeftPanel(null);
+    setMenuOpen(false);
+  };
+
+  const openPanel = (panel) => {
+    setLeftPanel(panel);
+    setMenuOpen(false);
+  };
+
+  const closePanel = () => {
+    setLeftPanel(null);
+  };
+
+  const handleMenuSelect = (action) => {
+    if (action === 'footprint') {
+      openPanel('footprint');
+      return;
+    }
+    if (action === 'auth') {
+      openPanel(user ? 'profile' : 'auth');
+    }
+  };
+
+  const handlePlusClick = () => {
+    setMenuOpen((prev) => !prev);
+  };
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(stars));
-  }, [stars]);
+    if (!user) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(stars));
+    }
+  }, [stars, user]);
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
     audio.volume = volume;
   }, [volume]);
+
+  useEffect(() => {
+    const initAuth = async () => {
+      const { data } = await supabase.auth.getSession();
+      const currentSession = data?.session ?? null;
+      setSession(currentSession);
+      setUser(currentSession?.user ?? null);
+
+      if (currentSession?.access_token) {
+        await fetchFootprints(currentSession.access_token);
+      } else {
+        setStars(loadInitialStars());
+      }
+    };
+
+    initAuth();
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setUser(nextSession?.user ?? null);
+
+      if (nextSession?.access_token) {
+        fetchFootprints(nextSession.access_token);
+      } else {
+        setStars(loadInitialStars());
+      }
+    });
+
+    return () => {
+      listener.subscription.unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     if (!lcdFlash) return;
@@ -231,6 +374,19 @@ function App() {
     const timer = setTimeout(() => setY2kAlert(''), 1800);
     return () => clearTimeout(timer);
   }, [y2kAlert]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+
+    const handleClickOutside = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [menuOpen]);
 
   const filteredStars = useMemo(() => {
     if (track === 'ALL') return stars;
@@ -280,7 +436,19 @@ function App() {
     setOpenCards((prev) => prev.filter((item) => item !== id));
   };
 
-  const removeStar = (id) => {
+  const removeStar = async (id) => {
+    if (!user) {
+      setY2kAlert('请先登录后再删除足迹');
+      setPendingDeleteId(null);
+      return;
+    }
+
+    const success = await deleteFootprint(id);
+    if (!success) {
+      setPendingDeleteId(null);
+      return;
+    }
+
     setStars((prev) => prev.filter((star) => star.id !== id));
     closeCard(id);
   };
@@ -299,10 +467,14 @@ function App() {
     setPendingDeleteId(null);
   };
 
-  const canSubmit = stars.length < MAX_STARS;
+  const canSubmit = Boolean(user) && stars.length < MAX_STARS;
 
-  const handleAddStar = (e) => {
+  const handleAddStar = async (e) => {
     e.preventDefault();
+    if (!user) {
+      setY2kAlert('Please login first.');
+      return;
+    }
     if (!canSubmit) {
       setY2kAlert('夜空已经装不下更多星星啦！请先摘下一颗旧的吧～✨🐰');
       return;
@@ -332,13 +504,18 @@ function App() {
       return;
     }
 
-    setStars((prev) => [...prev, item]);
+    const created = await createFootprint(item);
+    if (!created) {
+      return;
+    }
+
+    setStars((prev) => [...prev, created]);
     setForm({ city: '', date: '', note: '', imageData: '', imageName: '', lat: '', lng: '' });
     if (imageInputRef.current) {
       imageInputRef.current.value = '';
     }
     setTrack(year && TRACKS.includes(year) ? year : 'ALL');
-    addCard(item.id);
+    addCard(created.id);
   };
 
   const handlePickImage = (e) => {
@@ -368,6 +545,12 @@ function App() {
 
   const mapCenterSource = track === 'ALL' ? stars : filteredStars;
 
+  const panelTitles = {
+    footprint: 'ADD FOOTPRINT',
+    auth: 'LOGIN / REGISTER',
+    profile: 'MY PROFILE',
+  };
+
   return (
     <div className="app-shell">
       <audio ref={audioRef} src={TRACK_URL} loop preload="auto" />
@@ -393,7 +576,7 @@ function App() {
         />
 
         <MapClickGeocoder
-          enabled={formOpen}
+          enabled={leftPanel === 'footprint'}
           onPick={({ lat, lng }) => {
             setForm((prev) => ({
               ...prev,
@@ -429,97 +612,151 @@ function App() {
         </AnimatePresence>
       </MapContainer>
 
-      <div className="top-ui">
-        <motion.div
-          className="add-panel"
-          animate={{ y: formOpen ? 0 : -220, opacity: formOpen ? 1 : 0.6 }}
-          transition={{ type: 'spring', stiffness: 240, damping: 23 }}
-        >
-          <div className="panel-head">
-            <p>ADD FOOTPRINT</p>
-            <button type="button" onClick={() => setFormOpen((v) => !v)}>
-              {formOpen ? 'HIDE' : 'SHOW'}
-            </button>
-          </div>
-          {formOpen && (
-            <form onSubmit={handleAddStar} className="panel-form">
-              <input
-                value={form.city}
-                placeholder="City"
-                onChange={(e) => setForm((prev) => ({ ...prev, city: e.target.value }))}
-              />
-              <input
-                value={form.date}
-                placeholder="YYYY.MM.DD"
-                onChange={(e) => setForm((prev) => ({ ...prev, date: e.target.value }))}
-              />
-              <textarea
-                value={form.note}
-                placeholder="Travel note"
-                rows={2}
-                onChange={(e) => setForm((prev) => ({ ...prev, note: e.target.value }))}
-              />
-              <div className="image-picker-row">
-                <input
-                  ref={imageInputRef}
-                  type="file"
-                  accept="image/*"
-                  className="image-file-input"
-                  onChange={handlePickImage}
-                />
-                <button
-                  type="button"
-                  className="image-picker-btn"
-                  onClick={() => imageInputRef.current?.click()}
-                >
-                  选择图片
+      <AnimatePresence>
+        {leftPanel && (
+          <motion.div
+            className="top-ui"
+            initial={{ y: -24, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: -24, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 240, damping: 23 }}
+          >
+            <motion.div className="add-panel" layout>
+              <div className="panel-head">
+                <p>{panelTitles[leftPanel]}</p>
+                <button type="button" onClick={closePanel}>
+                  HIDE
                 </button>
-                <p className="image-picker-name">
-                  {form.imageName || '未选择图片（将使用默认图）'}
-                </p>
               </div>
-              {form.imageData && <img className="image-preview" src={form.imageData} alt="Selected preview" />}
-              <div className="coord-row">
-                <input
-                  value={form.lat}
-                  placeholder="lat"
-                  onChange={(e) => setForm((prev) => ({ ...prev, lat: e.target.value }))}
-                />
-                <input
-                  value={form.lng}
-                  placeholder="lng"
-                  onChange={(e) => setForm((prev) => ({ ...prev, lng: e.target.value }))}
-                />
-              </div>
-              <p className="coord-hint">点击地图直接生成经纬度💗</p>
-              <button
-                type="submit"
-                aria-disabled={!canSubmit}
-                className={!canSubmit ? 'disabled' : ''}
-                onClick={(e) => {
-                  if (!canSubmit) {
-                    e.preventDefault();
-                    setY2kAlert('夜空已经装不下更多星星啦！请先摘下一颗旧的吧～✨🐰');
-                  }
-                }}
-              >
-                ADD STAR ({stars.length}/{MAX_STARS})
-              </button>
-            </form>
-          )}
-        </motion.div>
-      </div>
 
-      <motion.button
-        type="button"
-        className="map-plus-btn"
-        whileTap={{ y: 3, scale: 0.96 }}
-        onClick={() => setFormOpen(true)}
-        aria-label="Open add star panel"
-        title="Open add panel"
-      >
-        ＋
-      </motion.button>
+              {leftPanel === 'footprint' && (
+                <form onSubmit={handleAddStar} className="panel-form">
+                  <input
+                    value={form.city}
+                    placeholder="City"
+                    onChange={(e) => setForm((prev) => ({ ...prev, city: e.target.value }))}
+                  />
+                  <input
+                    value={form.date}
+                    placeholder="YYYY.MM.DD"
+                    onChange={(e) => setForm((prev) => ({ ...prev, date: e.target.value }))}
+                  />
+                  <textarea
+                    value={form.note}
+                    placeholder="Travel note"
+                    rows={2}
+                    onChange={(e) => setForm((prev) => ({ ...prev, note: e.target.value }))}
+                  />
+                  <div className="image-picker-row">
+                    <input
+                      ref={imageInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="image-file-input"
+                      onChange={handlePickImage}
+                    />
+                    <button
+                      type="button"
+                      className="image-picker-btn"
+                      onClick={() => imageInputRef.current?.click()}
+                    >
+                      选择图片
+                    </button>
+                    <p className="image-picker-name">
+                      {form.imageName || '未选择图片（将使用默认图）'}
+                    </p>
+                  </div>
+                  {form.imageData && (
+                    <img className="image-preview" src={form.imageData} alt="Selected preview" />
+                  )}
+                  <div className="coord-row">
+                    <input
+                      value={form.lat}
+                      placeholder="lat"
+                      onChange={(e) => setForm((prev) => ({ ...prev, lat: e.target.value }))}
+                    />
+                    <input
+                      value={form.lng}
+                      placeholder="lng"
+                      onChange={(e) => setForm((prev) => ({ ...prev, lng: e.target.value }))}
+                    />
+                  </div>
+                  <p className="coord-hint">点击地图直接生成经纬度💗</p>
+                  <button
+                    type="submit"
+                    aria-disabled={!canSubmit && Boolean(user)}
+                    className={!canSubmit && Boolean(user) ? 'disabled' : ''}
+                    onClick={(e) => {
+                      if (!user) {
+                        e.preventDefault();
+                        setY2kAlert('Please login first.');
+                        return;
+                      }
+                      if (!canSubmit) {
+                        e.preventDefault();
+                        setY2kAlert('夜空已经装不下更多星星啦！请先摘下一颗旧的吧～✨🐰');
+                      }
+                    }}
+                  >
+                    ADD STAR ({stars.length}/{MAX_STARS})
+                  </button>
+                </form>
+              )}
+
+              {leftPanel === 'auth' && (
+                <LoginForm onAuthSuccess={() => openPanel('footprint')} />
+              )}
+
+              {leftPanel === 'profile' && user && (
+                <ProfilePanel user={user} onSignOut={handleSignOut} />
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <div className="plus-menu-anchor" ref={menuRef}>
+        <AnimatePresence>
+          {menuOpen && (
+            <motion.div
+              className="plus-menu"
+              initial={{ opacity: 0, y: 10, scale: 0.92 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 8, scale: 0.94 }}
+              transition={{ type: 'spring', stiffness: 420, damping: 28 }}
+            >
+              <button
+                type="button"
+                className="plus-menu-item"
+                onClick={() => handleMenuSelect('footprint')}
+              >
+                <span className="plus-menu-glow" />
+                ADD FOOTPRINT
+              </button>
+              <button
+                type="button"
+                className="plus-menu-item plus-menu-item--auth"
+                onClick={() => handleMenuSelect('auth')}
+              >
+                <span className="plus-menu-glow" />
+                {user ? 'MY PROFILE' : 'LOGIN / REGISTER'}
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <motion.button
+          type="button"
+          className={`map-plus-btn ${menuOpen ? 'map-plus-btn--open' : ''}`}
+          whileTap={{ y: 3, scale: 0.96 }}
+          onClick={handlePlusClick}
+          aria-label="Open action menu"
+          aria-expanded={menuOpen}
+          title="Open menu"
+        >
+          {menuOpen ? '×' : '＋'}
+        </motion.button>
+      </div>
 
       <motion.div
         className="walkman"
