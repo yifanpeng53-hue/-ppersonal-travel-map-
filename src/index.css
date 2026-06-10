@@ -143,6 +143,126 @@ body {
   min-width: 0;
 }
 
+.ai-draft-section {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border-radius: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.95);
+  background: linear-gradient(135deg, rgba(255, 214, 238, 0.55), rgba(186, 220, 255, 0.5));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 0 16px rgba(255, 93, 184, 0.22),
+    0 0 24px rgba(111, 166, 255, 0.18);
+}
+
+.ai-draft-input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  border: 2px solid #fff;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-family: 'Baloo 2', cursive;
+  font-size: 14px;
+  line-height: 1.45;
+  color: #513252;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(240, 248, 255, 0.92));
+  resize: vertical;
+  min-height: 72px;
+  box-shadow: inset 0 0 12px rgba(167, 255, 229, 0.15);
+}
+
+.ai-draft-input:focus {
+  outline: none;
+  border-color: #b8fff0;
+  box-shadow:
+    0 0 0 2px rgba(167, 255, 229, 0.35),
+    inset 0 0 12px rgba(255, 93, 184, 0.12);
+}
+
+.ai-draft-input:disabled {
+  opacity: 0.72;
+  cursor: wait;
+}
+
+.ai-generate-btn {
+  width: 100%;
+  border: 0;
+  border-radius: 12px;
+  padding: 10px;
+  font-family: 'Press Start 2P', monospace;
+  font-size: 9px;
+  line-height: 1.5;
+  color: #fff;
+  cursor: pointer;
+  background: linear-gradient(120deg, #7b8cff, #ff5db8 55%, #a7ffe5);
+  box-shadow:
+    0 0 14px rgba(255, 93, 184, 0.45),
+    0 6px 0 rgba(91, 108, 196, 0.45);
+  transition: filter 0.15s ease, transform 0.15s ease;
+}
+
+.ai-generate-btn:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.ai-generate-btn:active:not(:disabled) {
+  transform: translateY(2px);
+  box-shadow:
+    0 0 10px rgba(255, 93, 184, 0.35),
+    0 3px 0 rgba(91, 108, 196, 0.45);
+}
+
+.ai-generate-btn:disabled {
+  cursor: wait;
+  opacity: 0.88;
+  animation: ai-btn-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes ai-btn-pulse {
+  0%,
+  100% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(1.12);
+  }
+}
+
+.panel-fields {
+  display: grid;
+  gap: 7px;
+}
+
+.panel-fields--loading {
+  pointer-events: none;
+}
+
+.field-skeleton {
+  color: transparent !important;
+  caret-color: transparent;
+  border-color: rgba(255, 255, 255, 0.85) !important;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 200, 230, 0.55) 0%,
+    rgba(200, 230, 255, 0.85) 45%,
+    rgba(167, 255, 229, 0.7) 55%,
+    rgba(255, 200, 230, 0.55) 100%
+  ) !important;
+  background-size: 220% 100% !important;
+  animation: skeleton-shimmer 1.15s ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -120% 0;
+  }
+}
+
 .panel-form input,
 .panel-form textarea {
   display: block;
@@ -168,6 +288,18 @@ body {
   font-size: 12px;
   line-height: 1.3;
   color: #7a648a;
+}
+
+.panel-form input.date-input-invalid {
+  border-color: #ff4f7f !important;
+  box-shadow: 0 0 0 2px rgba(255, 79, 127, 0.35);
+}
+
+.date-error-text {
+  margin: -4px 0 0;
+  font-size: 12px;
+  line-height: 1.3;
+  color: #ff3f7a;
 }
 
 .image-picker-row {
@@ -212,7 +344,7 @@ body {
   border: 2px solid #fff;
 }
 
-.panel-form button {
+.panel-form button:not(.ai-generate-btn) {
   width: 100%;
   min-width: 0;
   border: 0;
@@ -614,9 +746,20 @@ body {
   }
 
   .image-picker-btn,
-  .panel-form button {
+  .panel-form button:not(.ai-generate-btn),
+  .ai-generate-btn {
     font-size: 8px;
     padding: 8px;
+  }
+
+  .ai-draft-section {
+    padding: 8px;
+    border-radius: 12px;
+  }
+
+  .ai-draft-input {
+    font-size: 13px;
+    min-height: 60px;
   }
 
   .image-picker-name,

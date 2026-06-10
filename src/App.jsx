@@ -10,6 +10,17 @@ const STORAGE_KEY = 'yifan-y2k-travel-stars';
 const TRACKS = ['ALL', '2024', '2025', '2026'];
 const MAX_STARS = 100;
 const TRACK_URL = '/music/howsweet.mp3';
+const GEMINI_MODEL = 'gemini-3.5-flash';
+const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+const GEMINI_TRAVEL_SYSTEM_PROMPT = `职责：你是一个 Y2K 少女风的文旅 Agent。
+
+安全防线：若输入与「旅行、足迹、打卡、去过某地」完全无关，必须且只能返回：{ "error": "NOT_TRAVEL_RELATED" }。
+
+首都映射：输入国家则自动转换为该国家首都（如：日本 -> 东京）；输入微观景点则向上提炼返回所属城市（如：宇治茶屋 -> 宇治）。
+
+去幻觉留空：依靠地理常识返回与 city 一致的中心点 lat/lng 坐标。如果无法提炼具体城市，city、lat、lng 必须全返回空字符串 ""；若未提及时间，date 返回 ""。
+
+输出结构：必须是纯净 JSON，不得包含 markdown 代码块或任何额外文字，格式严格为：{ "city": "...", "date": "...", "travel_note": "Y2K风文案", "lat": "", "lng": "" }。`;
 
 const INITIAL_STARS = [
   {
@@ -54,6 +65,34 @@ const starIcon = (hidden) =>
     iconSize: [28, 28],
     iconAnchor: [14, 14],
   });
+
+function resolveDate(input) {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+
+  const yearMatch = trimmed.match(/^(\d{4})(年)?$/);
+  if (yearMatch) {
+    return `${yearMatch[1]}.01.01`;
+  }
+
+  const monthDayMatch = trimmed.match(/^(\d{1,2})[-./月](\d{1,2})(日)?$/);
+  if (monthDayMatch) {
+    const currentYear = new Date().getFullYear();
+    const month = monthDayMatch[1].padStart(2, '0');
+    const day = monthDayMatch[2].padStart(2, '0');
+    return `${currentYear}.${month}.${day}`;
+  }
+
+  const standardMatch = trimmed.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
+  if (standardMatch) {
+    const y = standardMatch[1];
+    const m = standardMatch[2].padStart(2, '0');
+    const d = standardMatch[3].padStart(2, '0');
+    return `${y}.${m}.${d}`;
+  }
+
+  return null;
+}
 
 function loadInitialStars() {
   try {
@@ -211,9 +250,14 @@ function App() {
     lat: '',
     lng: '',
   });
+  const [aiDraft, setAiDraft] = useState('');
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [dateError, setDateError] = useState('');
+  const [dateInvalid, setDateInvalid] = useState(false);
   const audioRef = useRef(null);
   const imageInputRef = useRef(null);
   const menuRef = useRef(null);
+  const geocodeRequestId = useRef(0);
   const [session, setSession] = useState(null);
   const [user, setUser] = useState(null);
 
@@ -469,6 +513,115 @@ function App() {
 
   const canSubmit = Boolean(user) && stars.length < MAX_STARS;
 
+  const getCityFromNominatim = async (lat, lng) => {
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(
+          lat,
+        )}&lon=${encodeURIComponent(lng)}&zoom=10&addressdetails=1`,
+        {
+          headers: {
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          },
+        },
+      );
+      if (!response.ok) return null;
+      const data = await response.json();
+      const address = data.address || {};
+      return (
+        address.city ||
+        address.town ||
+        address.village ||
+        address.hamlet ||
+        address.county ||
+        address.state ||
+        address.region ||
+        null
+      );
+    } catch {
+      return null;
+    }
+  };
+
+  const reverseGeocodeCity = async (lat, lng, requestId) => {
+    const latStr = Number(lat).toFixed(4);
+    const lngStr = Number(lng).toFixed(4);
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+
+    if (apiKey) {
+      const prompt = `你是一个地理坐标专家。请严格检索现实世界地图，告诉我经纬度坐标 (${latStr}, ${lngStr}) 属于哪个城市或省/自治区/区域。可以返回市级名称，也可以返回省/自治区/区域级别，但不能返回国家/大陆/洲等更大层级。请只返回该坐标实际所在的地点名称（如：东京、新疆、广东），不要带任何标点、废话或「市」字。如果该坐标在海里或无人区、或无法精确到上述层级，请返回「未知」。`;
+
+      try {
+        const response = await fetch(
+          `${GEMINI_API_BASE}/models/${GEMINI_MODEL}:generateContent`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': apiKey,
+            },
+            body: JSON.stringify({
+              contents: [{ role: 'user', parts: [{ text: prompt }] }],
+            }),
+          },
+        );
+
+        if (response.ok) {
+          const payload = await response.json();
+          const city = payload?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+          if (city && requestId === geocodeRequestId.current && city !== '未知') {
+            setForm((prev) => ({
+              ...prev,
+              city,
+            }));
+            return;
+          }
+        }
+      } catch {
+        // 如果 Gemini 失败则继续回退地址解析
+      }
+    }
+
+    const fallbackCity = await getCityFromNominatim(lat, lng);
+    if (!fallbackCity || requestId !== geocodeRequestId.current) return;
+
+    setForm((prev) => ({
+      ...prev,
+      city: fallbackCity,
+    }));
+  };
+
+  const handleDateValidation = (inputValue) => {
+    const finalDate = resolveDate(inputValue);
+
+    if (finalDate) {
+      setForm((prev) => ({ ...prev, date: finalDate }));
+      setDateError('');
+      setDateInvalid(false);
+      return finalDate;
+    }
+
+    setDateError('请输入正确的日期（如：2026-06-10）');
+    setDateInvalid(true);
+    return null;
+  };
+
+  const handleMapPick = ({ lat, lng }) => {
+    const latStr = lat.toFixed(4);
+    const lngStr = lng.toFixed(4);
+
+    setForm((prev) => ({
+      ...prev,
+      city: '',
+      lat: latStr,
+      lng: lngStr,
+    }));
+
+    geocodeRequestId.current += 1;
+    const requestId = geocodeRequestId.current;
+    reverseGeocodeCity(lat, lng, requestId);
+  };
+
   const handleAddStar = async (e) => {
     e.preventDefault();
     if (!user) {
@@ -480,16 +633,21 @@ function App() {
       return;
     }
 
-    if (!form.city || !form.date || !form.lat || !form.lng) {
-      setY2kAlert('请把城市、日期和坐标填完整喔～');
+    if (form.city === '' || form.lat === '' || form.lng === '') {
+      setY2kAlert('城市和坐标还是空的喔～点地图落点或让 AI 一键生成吧！🌟💗');
       return;
     }
 
-    const year = form.date.slice(0, 4);
+    const validatedDate = handleDateValidation(form.date);
+    if (!validatedDate) {
+      return;
+    }
+
+    const year = validatedDate.slice(0, 4);
     const item = {
       id: `${form.city.toLowerCase()}-${Date.now()}`,
       city: form.city,
-      date: form.date,
+      date: validatedDate,
       year,
       lat: Number(form.lat),
       lng: Number(form.lng),
@@ -511,11 +669,86 @@ function App() {
 
     setStars((prev) => [...prev, created]);
     setForm({ city: '', date: '', note: '', imageData: '', imageName: '', lat: '', lng: '' });
+    setDateError('');
+    setDateInvalid(false);
     if (imageInputRef.current) {
       imageInputRef.current.value = '';
     }
     setTrack(year && TRACKS.includes(year) ? year : 'ALL');
     addCard(created.id);
+  };
+
+  const handleAIGenerate = async () => {
+    if (!aiDraft.trim()) {
+      setY2kAlert('先写点旅行日记嘛～');
+      return;
+    }
+
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+    if (!apiKey) {
+      setY2kAlert('缺少 Gemini API Key，请检查 .env.local');
+      return;
+    }
+
+    setAiGenerating(true);
+
+    try {
+      const response = await fetch(
+        `${GEMINI_API_BASE}/models/${GEMINI_MODEL}:generateContent`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey,
+          },
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [{ text: GEMINI_TRAVEL_SYSTEM_PROMPT }],
+            },
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: aiDraft.trim() }],
+              },
+            ],
+            generationConfig: {
+              responseMimeType: 'application/json',
+            },
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => null);
+        throw new Error(err?.error?.message || `AI 请求失败 (${response.status})`);
+      }
+
+      const payload = await response.json();
+      const rawText = payload?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!rawText) {
+        throw new Error('AI 未返回有效内容');
+      }
+
+      const resJson = JSON.parse(rawText);
+
+      if (resJson?.error === 'NOT_TRAVEL_RELATED') {
+        setY2kAlert('哎呀，这好像不是旅行足迹哦，AI 助手罢工啦！✨');
+        return;
+      }
+
+      setForm((prev) => ({
+        ...prev,
+        city: resJson.city != null ? String(resJson.city) : '',
+        date: resJson.date != null ? String(resJson.date) : '',
+        note: resJson.travel_note != null ? String(resJson.travel_note) : '',
+        lat: resJson.lat != null ? String(resJson.lat) : '',
+        lng: resJson.lng != null ? String(resJson.lng) : '',
+      }));
+    } catch (error) {
+      setY2kAlert(error?.message || 'AI 解析失败，请重试');
+    } finally {
+      setAiGenerating(false);
+    }
   };
 
   const handlePickImage = (e) => {
@@ -577,13 +810,7 @@ function App() {
 
         <MapClickGeocoder
           enabled={leftPanel === 'footprint'}
-          onPick={({ lat, lng }) => {
-            setForm((prev) => ({
-              ...prev,
-              lat: lat.toFixed(4),
-              lng: lng.toFixed(4),
-            }));
-          }}
+          onPick={handleMapPick}
         />
 
         <YearFlyTo items={mapCenterSource} track={track} />
@@ -631,22 +858,65 @@ function App() {
 
               {leftPanel === 'footprint' && (
                 <form onSubmit={handleAddStar} className="panel-form">
-                  <input
-                    value={form.city}
-                    placeholder="City"
-                    onChange={(e) => setForm((prev) => ({ ...prev, city: e.target.value }))}
-                  />
-                  <input
-                    value={form.date}
-                    placeholder="YYYY.MM.DD"
-                    onChange={(e) => setForm((prev) => ({ ...prev, date: e.target.value }))}
-                  />
-                  <textarea
-                    value={form.note}
-                    placeholder="Travel note"
-                    rows={2}
-                    onChange={(e) => setForm((prev) => ({ ...prev, note: e.target.value }))}
-                  />
+                  <div className="ai-draft-section">
+                    <textarea
+                      className="ai-draft-input"
+                      value={aiDraft}
+                      placeholder="请输入你的旅行日记，为你一键填入～"
+                      rows={3}
+                      disabled={aiGenerating}
+                      onChange={(e) => setAiDraft(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="ai-generate-btn"
+                      disabled={aiGenerating}
+                      onClick={handleAIGenerate}
+                    >
+                      {aiGenerating ? 'AI正在解析中...✨' : 'AI一键生成'}
+                    </button>
+                  </div>
+
+                  <div className={`panel-fields ${aiGenerating ? 'panel-fields--loading' : ''}`}>
+                    <input
+                      className={aiGenerating ? 'field-skeleton' : ''}
+                      value={form.city}
+                      placeholder="City"
+                      disabled={aiGenerating}
+                      readOnly={aiGenerating}
+                      onChange={(e) => setForm((prev) => ({ ...prev, city: e.target.value }))}
+                    />
+                    <input
+                      className={`${aiGenerating ? 'field-skeleton' : ''} ${dateInvalid ? 'date-input-invalid' : ''}`}
+                      value={form.date}
+                      placeholder="Date 例如：2026-06-10 或 2026"
+                      disabled={aiGenerating}
+                      readOnly={aiGenerating}
+                      onChange={(e) => {
+                        setForm((prev) => ({ ...prev, date: e.target.value }));
+                        if (dateInvalid) {
+                          setDateError('');
+                          setDateInvalid(false);
+                        }
+                      }}
+                      onBlur={(e) => {
+                        if (e.target.value.trim()) {
+                          handleDateValidation(e.target.value);
+                        }
+                      }}
+                    />
+                    {dateError && <p className="date-error-text">{dateError}</p>}
+                    <textarea
+                      className={aiGenerating ? 'field-skeleton' : ''}
+                      value={form.note}
+                      placeholder="Travel note"
+                      rows={2}
+                      disabled={aiGenerating}
+                      readOnly={aiGenerating}
+                      onChange={(e) => setForm((prev) => ({ ...prev, note: e.target.value }))}
+                    />
+                  </div>
+
                   <div className="image-picker-row">
                     <input
                       ref={imageInputRef}
@@ -669,15 +939,21 @@ function App() {
                   {form.imageData && (
                     <img className="image-preview" src={form.imageData} alt="Selected preview" />
                   )}
-                  <div className="coord-row">
+                  <div className={`coord-row ${aiGenerating ? 'panel-fields--loading' : ''}`}>
                     <input
+                      className={aiGenerating ? 'field-skeleton' : ''}
                       value={form.lat}
                       placeholder="lat"
+                      disabled={aiGenerating}
+                      readOnly={aiGenerating}
                       onChange={(e) => setForm((prev) => ({ ...prev, lat: e.target.value }))}
                     />
                     <input
+                      className={aiGenerating ? 'field-skeleton' : ''}
                       value={form.lng}
                       placeholder="lng"
+                      disabled={aiGenerating}
+                      readOnly={aiGenerating}
                       onChange={(e) => setForm((prev) => ({ ...prev, lng: e.target.value }))}
                     />
                   </div>
@@ -695,6 +971,16 @@ function App() {
                       if (!canSubmit) {
                         e.preventDefault();
                         setY2kAlert('夜空已经装不下更多星星啦！请先摘下一颗旧的吧～✨🐰');
+                        return;
+                      }
+                      if (form.city === '' || form.lat === '' || form.lng === '') {
+                        e.preventDefault();
+                        setY2kAlert('城市或坐标还是空的喔～点地图落点或让 AI 一键生成吧！🌟💗');
+                        return;
+                      }
+                      if (!resolveDate(form.date)) {
+                        e.preventDefault();
+                        handleDateValidation(form.date);
                       }
                     }}
                   >
